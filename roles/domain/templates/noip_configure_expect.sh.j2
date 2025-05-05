@@ -1,0 +1,25 @@
+#!/usr/bin/expect
+
+set timeout 10
+
+# Uruchomienie noip2 w trybie konfiguracji
+spawn /usr/local/bin/noip2 -C -Y
+
+# Oczekiwanie na komunikat o podanie loginu
+expect "Please enter the login/email string for no-ip.com"
+send "{{ noip_username }}\r"
+
+# Oczekiwanie na komunikat o podanie hasła
+expect "Please enter the password for user"
+send "{{ noip_password }}\r"
+
+# Oczekiwanie na zapytanie o interwał
+expect "Please enter an update interval:"
+send "{{ noip_update_interval }}\r"
+
+# Oczekiwanie na pytanie, czy chcesz uruchomić coś po udanym zaktualizowaniu
+expect "Do you wish to run something at successful update?"
+send "n\r"
+
+# Oczekiwanie na koniec konfiguracji
+expect "New configuration file '/usr/local/etc/no-ip2.conf' created."

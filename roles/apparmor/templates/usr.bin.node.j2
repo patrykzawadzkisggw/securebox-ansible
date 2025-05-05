@@ -1,0 +1,62 @@
+#include <tunables/global>
+
+/usr/bin/node {
+  # Włączenie abstrakcji dla Node.js
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/openssl>
+
+  # Uprawnienia do plików binarnych Node.js
+  capability net_bind_service,
+  capability setuid,
+  capability setgid,
+
+  # Dostęp do katalogów aplikacji
+  {{ node_app_dir }}/** r,
+  {{ node_app_source_dir }}/** r,
+  {{ node_app_files_dir }}/** rwk,
+  {{ node_app_ssl_dir }}/** r,
+
+  # Plik .env
+  {{ node_app_source_dir }}/.env r,
+
+  # Katalog domowy użytkownika nodeapp
+  /home/{{ node_app_user }}/** rwk,
+  /home/{{ node_app_user }}/.npm/** rwk,
+  /home/{{ node_app_user }}/.pm2/** rwk,
+
+  # Dostęp do PM2
+  /usr/lib/node_modules/pm2/** r,
+  /usr/bin/pm2 ix,
+  /usr/bin/node Px,
+
+
+  # Sieć (porty aplikacji)
+  network inet stream,
+  network inet6 stream,
+
+  # Dostęp do Drizzle i zależności
+  /usr/lib/node_modules/drizzle-kit/** r,
+  /usr/lib/node_modules/** r,
+
+  # Logi PM2
+  /home/{{ node_app_user }}/.pm2/logs/** rw,
+
+  
+
+  # Dostęp do konfiguracji OpenSSL
+  /etc/ssl/openssl.cnf r,
+
+  # Ograniczenie dostępu do innych plików w /etc/
+  deny /etc/passwd r,
+  deny /etc/shadow r,
+  deny /etc/group r,
+  deny /etc/gshadow r,
+  deny /root/** r,
+  deny /var/lib/postgresql/** r,
+  deny /etc/letsencrypt/** r,
+
+  # Dostęp do bibliotek systemowych
+  /usr/lib/** r,
+  /lib/** r,
+}

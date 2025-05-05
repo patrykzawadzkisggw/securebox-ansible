@@ -1,0 +1,57 @@
+---
+# tasks file for roles/apparmor
+
+- name: Upewnij się, że AppArmor jest zainstalowany
+  ansible.builtin.apt:
+    name: "{{ apparmor_packages }}"
+    state: present
+    update_cache: yes
+  when: apparmor_enabled
+
+- name: Upewnij się, że AppArmor jest włączony
+  ansible.builtin.service:
+    name: apparmor
+    state: started
+    enabled: yes
+  when: apparmor_enabled
+
+- name: Utwórz katalog dla profili AppArmor, jeśli nie istnieje
+  ansible.builtin.file:
+    path: /etc/apparmor.d
+    state: directory
+    mode: "0755"
+
+
+- name: Wygeneruj profil AppArmor dla Node.js
+  ansible.builtin.template:
+    src: usr.bin.node.j2
+    dest: /etc/apparmor.d/usr.bin.node
+    mode: "0644"
+  notify: Reload AppArmor
+  when: apparmor_enabled
+
+- name: Wygeneruj profil AppArmor dla No-IP
+  ansible.builtin.template:
+    src: usr.local.bin.noip2.j2
+    dest: /etc/apparmor.d/usr.local.bin.noip2
+    mode: "0644"
+  notify: Reload AppArmor
+  when: apparmor_enabled
+
+- name: Wygeneruj profil AppArmor dla Certbot
+  ansible.builtin.template:
+    src: usr.bin.certbot.j2
+    dest: /etc/apparmor.d/usr.bin.certbot
+    mode: "0644"
+  notify: Reload AppArmor
+  when: apparmor_enabled
+
+- name: Włącz profile AppArmor w trybie enforce
+  ansible.builtin.command:
+    cmd: aa-enforce {{ item }}
+    warn: false
+  loop:
+    - /etc/apparmor.d/usr.bin.node
+    - /etc/apparmor.d/usr.local.bin.noip2
+    - /etc/apparmor.d/usr.bin.certbot
+  when: apparmor_enabled

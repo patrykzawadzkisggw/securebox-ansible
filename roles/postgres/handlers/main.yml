@@ -1,0 +1,11 @@
+---
+# handlers file for roles/postgres
+- name: Restart PostgreSQL
+  ansible.builtin.service:
+    name: postgresql
+    state: restarted
+
+- name: Restart fail2ban
+  ansible.builtin.service:
+    name: fail2ban
+    state: restarted

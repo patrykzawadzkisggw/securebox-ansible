@@ -1,0 +1,7 @@
+---
+# handlers file for roles/domain
+
+- name: Reload ufw
+  ansible.builtin.service:
+    name: ufw
+    state: restarted

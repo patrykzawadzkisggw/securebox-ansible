@@ -1,0 +1,198 @@
+---
+# tasks file for roles/domain
+
+- name: Zainstaluj wymagane pakiety
+  ansible.builtin.apt:
+    name:
+      - make
+      - gcc
+      - certbot
+      - python3-certbot
+      - expect
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: Utwórz katalog instalacyjny No-IP
+  ansible.builtin.file:
+    path: "{{ noip_install_dir }}"
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+  become: yes
+
+- name: Upewnij się, że istnieje /usr/local/bin
+  ansible.builtin.file:
+    path: /usr/local/bin
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+  become: yes
+
+- name: Upewnij się, że istnieje /usr/local/etc
+  ansible.builtin.file:
+    path: /usr/local/etc
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+  become: yes
+
+- name: Pobierz źródła No-IP DUC
+  ansible.builtin.get_url:
+    url: "{{ noip_tar_url }}"
+    dest: "{{ noip_install_dir }}/noip-duc-linux.tar.gz"
+    mode: '0644'
+  become: yes
+
+- name: Rozpakuj źródła No-IP DUC
+  ansible.builtin.unarchive:
+    src: "{{ noip_install_dir }}/noip-duc-linux.tar.gz"
+    dest: "{{ noip_install_dir }}"
+    remote_src: yes
+    owner: root
+    group: root
+  become: yes
+
+- name: Znajdź rozpakowany katalog No-IP
+  ansible.builtin.find:
+    paths: "{{ noip_install_dir }}"
+    patterns: "noip-*"
+    file_type: directory
+  register: noip_extracted_dir
+  become: yes
+
+- name: Wyświetl znaleziony katalog
+  ansible.builtin.debug:
+    msg: "Znaleziono katalog No-IP: {{ noip_extracted_dir.files | map(attribute='path') | first | default('none') }}"
+
+- name: Zakończ, jeśli nie znaleziono katalogu
+  ansible.builtin.fail:
+    msg: "Nie znaleziono rozpakowanego katalogu No-IP w {{ noip_install_dir }}"
+  when: noip_extracted_dir.files | length == 0
+
+- name: Skompiluj No-IP DUC
+  ansible.builtin.shell: |
+    cd {{ noip_extracted_dir.files | map(attribute='path') | first }}
+    make
+  args:
+    creates: "{{ noip_extracted_dir.files | map(attribute='path') | first }}/noip2"
+  become: yes
+
+- name: Zainstaluj plik wykonywalny No-IP
+  ansible.builtin.copy:
+    src: "{{ noip_extracted_dir.files | map(attribute='path') | first }}/noip2"
+    dest: /usr/local/bin/noip2
+    mode: '0755'
+    owner: root
+    group: root
+    remote_src: yes
+  become: yes
+
+- name: Wygeneruj konfigurację No-IP bez interakcji
+  ansible.builtin.template:
+    src: noip_configure_expect.sh.j2
+    dest: /usr/local/bin/noip_configure_expect.sh
+    mode: '0755'
+  become: yes
+
+- name: Uruchom skrypt konfiguracji No-IP
+  ansible.builtin.command:
+    cmd: /usr/local/bin/noip_configure_expect.sh
+  become: yes
+
+
+- name: Ustaw uprawnienia do pliku konfiguracyjnego No-IP
+  ansible.builtin.file:
+    path: /usr/local/etc/no-ip2.conf
+    mode: '0600'
+    owner: root
+    group: root
+  become: yes
+
+- name: Upewnij się, że cron jest zainstalowany
+  ansible.builtin.apt:
+    name: cron
+    state: present
+  become: yes
+  tags: cron
+
+- name: Upewnij się, że cron jest włączony i uruchomiony
+  ansible.builtin.service:
+    name: cron
+    enabled: yes
+    state: started
+  become: yes
+  tags: cron
+
+- name: Upewnij się, że noip2 działa co 30 minut
+  ansible.builtin.cron:
+    name: "Run noip2 every 30 minutes as root"
+    user: root
+    minute: "*/30"
+    job: "/usr/bin/pgrep noip2 || /usr/local/bin/noip2 -c /usr/local/etc/no-ip2.conf"
+    state: present
+  become: yes
+  tags: cron
+
+- name: Upewnij się, że noip2 uruchamia się po restarcie
+  ansible.builtin.cron:
+    name: "Run noip2 on reboot"
+    user: root
+    special_time: reboot
+    job: "/usr/bin/pgrep noip2 || /usr/local/bin/noip2 -c /usr/local/etc/no-ip2.conf"
+    state: present
+  become: yes
+  tags: cron
+
+- name: Utwórz katalog certyfikatów
+  ansible.builtin.file:
+    path: "{{ certs_dir }}"
+    state: directory
+    mode: '0755'
+  become: yes
+
+- name: Skonfiguruj zaporę
+  ansible.builtin.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop:
+    - "5000"
+    - "80"
+    - "22"
+  notify: Reload ufw
+
+- name: Wygeneruj certyfikat Let's Encrypt
+  ansible.builtin.command: >
+    certbot certonly --non-interactive --agree-tos
+    --email {{ letsencrypt_email }}
+    --standalone
+    -d {{ letsencrypt_domain }}
+  args:
+    creates: "/etc/letsencrypt/live/{{ letsencrypt_domain }}/fullchain.pem"
+  become: yes
+
+- name: Skopiuj certyfikat i klucz do katalogu certs_dir
+  ansible.builtin.copy:
+    src: "/etc/letsencrypt/live/{{ letsencrypt_domain }}/{{ item.src }}"
+    dest: "{{ node_app_ssl_dir }}/{{ item.dest }}"
+    remote_src: yes
+    mode: '0644'
+  loop:
+    - { src: "fullchain.pem", dest: "server.crt" }
+    - { src: "privkey.pem", dest: "server.key" }
+  become: yes
+  tags: copy_ssl
+
+- name: Ustaw bezpieczne uprawnienia dla certyfikatów SSL
+  ansible.builtin.file:
+    path: "{{ node_app_ssl_dir }}"
+    owner: "{{ node_app_user }}"
+    group: "{{ node_app_group }}"
+    mode: "0700"
+    recurse: yes
+  become: yes
+  tags: copy_ssl

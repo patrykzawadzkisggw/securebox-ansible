@@ -1,0 +1,38 @@
+#include <tunables/global>
+
+/usr/bin/certbot {
+  # Włączenie abstrakcji
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/openssl>
+
+  # Uprawnienia do pliku binarnego
+  capability dac_override,
+  capability net_bind_service,
+
+  # Dostęp do katalogów certyfikatów
+  /etc/letsencrypt/** rwk,
+  {{ node_app_ssl_dir }}/** rw,
+
+  # Katalog konfiguracyjny Certbot
+  /var/lib/letsencrypt/** rw,
+  /var/log/letsencrypt/** rw,
+
+  # Sieć (połączenia do serwerów Let's Encrypt)
+  network inet stream,
+  network inet6 stream,
+
+  # Dostęp do Pythona i zależności
+  /usr/bin/python3* ix,
+  /usr/lib/python3*/** r,
+  /usr/local/lib/python3*/** r,
+
+  # Ograniczenie dostępu do innych katalogów
+  deny /etc/postgresql/** r,
+  deny /var/lib/postgresql/** r,
+  deny /home/{{ node_app_user }}/** r,
+
+  # Dostęp do bibliotek systemowych
+  /usr/lib/** r,
+  /lib/** r,
+}

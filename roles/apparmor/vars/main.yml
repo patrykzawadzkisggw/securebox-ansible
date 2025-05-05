@@ -1,0 +1,6 @@
+---
+# vars file for roles/apparmor
+apparmor_enabled: true
+apparmor_packages:
+  - apparmor
+  - apparmor-utils

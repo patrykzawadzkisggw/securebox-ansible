@@ -1,0 +1,234 @@
+---
+# tasks file for roles/node_app
+
+- name: Zainstaluj zależności systemowe
+  ansible.builtin.apt:
+    name:
+      - git
+      - curl
+      - gnupg
+      - acl
+      - ufw
+    state: present
+    update_cache: yes
+
+- name: Dodaj repozytorium Node.js 22
+  ansible.builtin.shell: |
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  args:
+    creates: /etc/apt/sources.list.d/nodesource.list
+
+- name: Zainstaluj Node.js 22
+  ansible.builtin.apt:
+    name: nodejs
+    state: present
+    update_cache: yes
+
+- name: Zainstaluj PM2 globalnie
+  ansible.builtin.command:
+    cmd: npm install -g pm2
+    creates: /usr/bin/pm2
+
+- name: Utwórz grupę nodeapp
+  ansible.builtin.group:
+    name: "{{ node_app_group }}"
+    system: yes
+    state: present
+
+- name: Utwórz użytkownika nodeapp
+  ansible.builtin.user:
+    name: "{{ node_app_user }}"
+    group: "{{ node_app_group }}"
+    system: yes
+    shell: /bin/bash
+    create_home: yes
+    home: /home/{{ node_app_user }}
+
+
+- name: Utwórz katalog aplikacji
+  ansible.builtin.file:
+    path: "{{ node_app_dir }}"
+    state: directory
+    owner: "{{ node_app_user }}"
+    group: "{{ node_app_group }}"
+    mode: "0750"
+
+- name: Upewnij się, że katalog domowy nodeapp ma właściwe uprawnienia
+  ansible.builtin.file:
+    path: "/home/{{ node_app_user }}"
+    owner: "{{ node_app_user }}"
+    group: "{{ node_app_group }}"
+    state: directory
+    mode: "0750"
+
+
+- name: Sklonuj lub zaktualizuj repozytorium aplikacji Node.js
+  ansible.builtin.git:
+    repo: "{{ node_app_repo }}"
+    dest: "{{ node_app_source_dir }}"
+    version: "{{ node_app_branch }}"
+    accept_hostkey: yes
+    update: yes
+    force: yes
+  become_user: "{{ node_app_user }}"
+
+- name: Zainstaluj drizzle-kit globalnie
+  ansible.builtin.command:
+    cmd: npm install -g drizzle-kit
+  when: ansible_check_mode == false
+
+- name: Zainstaluj zależności Express.js (cors, helmet, morgan)
+  ansible.builtin.command:
+    cmd: npm install cors helmet morgan
+    chdir: "{{ node_app_source_dir }}"
+  become_user: "{{ node_app_user }}"
+  when: ansible_check_mode == false
+
+- name: Utwórz katalog plików z dziedziczonymi ACL
+  ansible.builtin.file:
+    path: "{{ node_app_files_dir }}"
+    state: directory
+    owner: "{{ node_app_user }}"
+    group: "{{ node_app_group }}"
+    mode: "0750"
+
+- name: Ustaw ACL dla użytkownika na katalog plików
+  ansible.builtin.acl:
+    path: "{{ node_app_files_dir }}"
+    entity: "{{ node_app_user }}"
+    etype: user
+    permissions: rwx
+    default: yes
+    state: present
+
+- name: Ustaw ACL dla grupy na katalog plików
+  ansible.builtin.acl:
+    path: "{{ node_app_files_dir }}"
+    entity: "{{ node_app_group }}"
+    etype: group
+    permissions: rwx
+    default: yes
+    state: present
+
+- name: Utwórz katalog certyfikatów SSL
+  ansible.builtin.file:
+    path: "{{ node_app_ssl_dir }}"
+    state: directory
+    owner: "{{ node_app_user }}"
+    group: "{{ node_app_group }}"
+    mode: "0700"
+
+- name: Zainstaluj zależności aplikacji
+  ansible.builtin.command:
+    cmd: npm install
+    chdir: "{{ node_app_source_dir }}"
+  become_user: "{{ node_app_user }}"
+
+- name: Utwórz plik .env
+  ansible.builtin.template:
+    src: templates/env.j2
+    dest: "{{ node_app_source_dir }}/.env"
+    owner: "{{ node_app_user }}"
+    group: "{{ node_app_group }}"
+    mode: "0600"
+
+- name: Utwórz plik konfiguracyjny ekosystemu PM2
+  ansible.builtin.copy:
+    content: |
+      module.exports = {
+        apps: [{
+          name: '{{ node_app_service_name }}',
+          script: './app.js',
+          env: {
+            NODE_ENV: 'production',
+            PORT: {{ node_app_port }}
+          }
+        }]
+      }
+    dest: "{{ node_app_source_dir }}/ecosystem.config.js"
+    owner: "{{ node_app_user }}"
+    group: "{{ node_app_group }}"
+    mode: "0640"
+
+- name: Wygeneruj schemat bazy danych
+  ansible.builtin.command:
+    cmd: npx drizzle-kit generate --config=drizzle.config.mjs
+    chdir: "{{ node_app_source_dir }}"
+  become_user: "{{ node_app_user }}"
+  changed_when: false
+  register: drizzle_generate_output
+
+- name: Pokaż wynik generowania schematu
+  ansible.builtin.debug:
+    var: drizzle_generate_output.stdout_lines
+
+- name: Wdróż schemat bazy danych
+  ansible.builtin.command:
+    cmd: npx drizzle-kit push --config=drizzle.config.mjs
+    chdir: "{{ node_app_source_dir }}"
+  become_user: "{{ node_app_user }}"
+  changed_when: false
+  register: drizzle_push_output
+
+- name: Pokaż wynik wdrażania schematu
+  ansible.builtin.debug:
+    var: drizzle_push_output.stdout_lines
+
+- name: Przyznaj USAGE na schemacie public dla użytkownika
+  community.postgresql.postgresql_query:
+    db: "{{node_app_env.DB_DATABASE}}"
+    query: "GRANT USAGE ON SCHEMA public TO {{ db_user }};"
+    login_user: "{{node_app_env.DB_USER}}"
+    login_password: "{{node_app_env.DB_PASSWORD}}"
+    login_host: "{{node_app_env.DB_HOST}}"
+
+- name: Przyznaj uprawnienia do tabel w schemacie public
+  community.postgresql.postgresql_query:
+    db: "{{node_app_env.DB_DATABASE}}"
+    query: "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {{ db_user }};"
+    login_user: "{{node_app_env.DB_USER}}"
+    login_password: "{{node_app_env.DB_PASSWORD}}"
+    login_host: "{{node_app_env.DB_HOST}}"
+
+- name: Uruchom PM2 dla aplikacji nodeapp
+  ansible.builtin.command:
+    cmd: pm2 start ecosystem.config.js --name {{ node_app_service_name }}
+    chdir: "{{ node_app_source_dir }}"
+  become_user: "{{ node_app_user }}"
+  changed_when: false
+
+- name: Zapisz konfigurację PM2
+  ansible.builtin.command:
+    cmd: pm2 save
+  become_user: "{{ node_app_user }}"
+  changed_when: false
+
+- name: Skonfiguruj autostart PM2 przez systemd
+  ansible.builtin.command:
+    cmd: >
+      env PATH=$PATH:/usr/bin
+      /usr/lib/node_modules/pm2/bin/pm2
+      startup systemd -u {{ node_app_user }} --hp /home/{{ node_app_user }}
+  become: true
+  changed_when: false
+
+- name: Skonfiguruj zaporę
+  ansible.builtin.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop:
+    - "5000"
+    - "80"
+    - "22"
+  notify: Reload ufw
+  tags:
+    - firewall_config
+
+- name: Odrzuć wszystkie inne porty
+  ansible.builtin.ufw:
+    rule: deny
+    state: enabled
+  notify: Reload ufw
+  tags:
+    - firewall_config

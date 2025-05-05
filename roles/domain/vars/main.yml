@@ -1,0 +1,11 @@
+---
+# vars file for roles/domain
+
+noip_service: noip2
+noip_update_interval: 30
+noip_version: "2.1.9-1"
+noip_tar_url: "http://www.no-ip.com/client/linux/noip-duc-linux.tar.gz"
+noip_install_dir: "/usr/local/src"
+letsencrypt_email: "{{ noip_username }}"
+letsencrypt_domain: "{{ noip_hostname }}"
+certs_dir: "/certyficatesp"

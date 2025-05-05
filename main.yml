@@ -1,0 +1,13 @@
+- name: "Uruchom role"
+  hosts: all
+  become: true
+  become_method: sudo
+
+  vars_files:
+    - vars.yml
+
+  roles:
+    - postgres
+    - node_app
+    - domain
+    - apparmor

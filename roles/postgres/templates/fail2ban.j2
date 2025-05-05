@@ -1,0 +1,8 @@
+[postgresql]
+enabled = true
+port = 5432
+filter = postgresql
+logpath = /var/log/postgresql/postgresql-{{ postgresql_version }}-main.log
+maxretry = 3
+bantime = 3600
+findtime = 600

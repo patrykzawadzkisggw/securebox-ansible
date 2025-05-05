@@ -1,0 +1,7 @@
+---
+# vars file for roles/postgres
+postgresql_user: postgres
+postgresql_group: postgres
+postgresql_listen_addresses: "'127.0.0.1'"
+postgresql_max_connections: 50
+postgresql_password_encryption: scram-sha-256

@@ -1,0 +1,36 @@
+#include <tunables/global>
+
+/usr/local/bin/noip2 {
+  # Włączenie abstrakcji
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+
+  # Uprawnienia do pliku binarnego
+  capability net_admin,
+  capability net_bind_service,
+
+  # Dostęp do pliku konfiguracyjnego
+  /usr/local/etc/no-ip2.conf r,
+
+  # Dostęp do pliku binarnego
+  /usr/local/bin/noip2 r,
+
+  # Sieć (połączenia wychodzące do serwerów No-IP)
+  network inet dgram,
+  network inet stream,
+  network inet6 dgram,
+  network inet6 stream,
+
+  # Logi i pliki tymczasowe
+  /var/log/noip2.log rw,
+  /tmp/** rw,
+
+  # Ograniczenie dostępu do innych katalogów
+  deny /etc/** r,
+  deny /root/** r,
+  deny /home/** r,
+
+  # Dostęp do bibliotek systemowych
+  /usr/lib/** r,
+  /lib/** r,
+}
