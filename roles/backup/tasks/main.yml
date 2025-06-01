@@ -1,0 +1,80 @@
+---
+# Plik zadań dla roli backup
+- name: Zainstaluj wymagane pakiety wstępne dla Azure CLI (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - apt-transport-https
+      - lsb-release
+      - gnupg
+    state: present
+    update_cache: yes
+  when: ansible_os_family == "Debian"
+  become: true
+
+- name: Dodaj klucz GPG Microsoft dla Azure CLI (Debian/Ubuntu)
+  ansible.builtin.apt_key:
+    url: https://packages.microsoft.com/keys/microsoft.asc
+    state: present
+  when: ansible_os_family == "Debian"
+  become: true
+
+- name: Dodaj repozytorium Azure CLI (Debian/Ubuntu)
+  ansible.builtin.apt_repository:
+    repo: deb [arch=amd64] https://packages.microsoft.com/repos/azure-cli/ {{ ansible_lsb.codename | lower }} main
+    state: present
+    filename: azure-cli
+  when: ansible_os_family == "Debian"
+  become: true
+
+- name: Zainstaluj wymagane pakiety (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name:
+      - postgresql-client
+      - gnupg
+      - azure-cli
+    state: present
+    update_cache: yes
+  when: ansible_os_family == "Debian"
+  become: true
+
+- name: Zainstaluj wymagane pakiety (RedHat)
+  ansible.builtin.dnf:
+    name:
+      - postgresql
+      - gnupg
+      - azure-cli
+    state: present
+  when: ansible_os_family == "RedHat"
+  become: true
+
+- name: Utwórz plik logów, jeśli nie istnieje
+  ansible.builtin.file:
+    path: "{{ backup_log_path }}"
+    state: touch
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+
+- name: Skopiuj skrypt backupu
+  ansible.builtin.template:
+    src: backup.sh.j2
+    dest: "{{ backup_script_path }}"
+    owner: root
+    group: root
+    mode: '0700'
+  become: true
+
+- name: Skonfiguruj zadanie crontab dla backupu
+  ansible.builtin.cron:
+    name: "Azure backup"
+    minute: "{{ backup_cron_schedule.split()[0] }}"
+    hour: "{{ backup_cron_schedule.split()[1] }}"
+    day: "{{ backup_cron_schedule.split()[2] }}"
+    month: "{{ backup_cron_schedule.split()[3] }}"
+    weekday: "{{ backup_cron_schedule.split()[4] }}"
+    job: "{{ backup_script_path }} >> {{ backup_log_path }} 2>&1"
+    state: present
+  become: true

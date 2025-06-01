@@ -1,0 +1,209 @@
+---
+# tasks file for roles/restore
+- name: Zainstaluj wymagane pakiety wstępne dla Azure CLI (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - apt-transport-https
+      - lsb-release
+      - gnupg
+    state: present
+    update_cache: yes
+  when: ansible_os_family == "Debian"
+  become: true
+
+- name: Dodaj klucz GPG Microsoft dla Azure CLI (Debian/Ubuntu)
+  ansible.builtin.apt_key:
+    url: https://packages.microsoft.com/keys/microsoft.asc
+    state: present
+  when: ansible_os_family == "Debian"
+  become: true
+
+- name: Dodaj repozytorium Azure CLI (Debian/Ubuntu)
+  ansible.builtin.apt_repository:
+    repo: deb [arch=amd64] https://packages.microsoft.com/repos/azure-cli/ {{ ansible_lsb.codename | lower }} main
+    state: present
+    filename: azure-cli
+  when: ansible_os_family == "Debian"
+  become: true
+
+- name: Zainstaluj wymagane pakiety (Debian/Ubuntu)
+  ansible.builtin.apt:
+    name:
+      - postgresql-client
+      - gnupg
+      - azure-cli
+    state: present
+    update_cache: yes
+  when: ansible_os_family == "Debian"
+  become: true
+
+- name: Zainstaluj wymagane pakiety (RedHat)
+  ansible.builtin.dnf:
+    name:
+      - postgresql
+      - gnupg
+      - azure-cli
+    state: present
+  when: ansible_os_family == "RedHat"
+  become: true
+
+- name: Utwórz tymczasowy katalog do przywracania
+  ansible.builtin.file:
+    path: "{{ restore_tmp_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  become: true
+
+- name: Wyświetl listę blobów dla debugowania (format table)
+  ansible.builtin.shell: |
+    az storage blob list --account-name {{ storage_account }} --container-name {{ container_name }} --sas-token "{{ sas_token }}" --output table
+  register: blob_list_table
+  become: true
+  changed_when: false
+  ignore_errors: true
+
+- name: Pokaż listę blobów (format table)
+  ansible.builtin.debug:
+    var: blob_list_table.stdout_lines
+
+- name: Wyświetl surową listę blobów w formacie TSV dla debugowania
+  ansible.builtin.shell: |
+    az storage blob list --account-name {{ storage_account }} --container-name {{ container_name }} --sas-token "{{ sas_token }}" --output tsv
+  register: blob_list_tsv
+  become: true
+  changed_when: false
+  ignore_errors: true
+
+- name: Pokaż surową listę blobów (TSV)
+  ansible.builtin.debug:
+    var: blob_list_tsv.stdout_lines
+
+- name: Wyświetl przefiltrowane i posortowane bloby dla debugowania
+  ansible.builtin.shell: |
+    az storage blob list --account-name {{ storage_account }} --container-name {{ container_name }} --sas-token "{{ sas_token }}" --output tsv | grep 'backup_[0-9]\{8\}_[0-9]\{6\}\.tar\.gz\.gpg' | sort -r | head -n 1
+  register: filtered_blob
+  become: true
+  changed_when: false
+  ignore_errors: true
+
+- name: Pokaż przefiltrowane i posortowane bloby
+  ansible.builtin.debug:
+    var: filtered_blob.stdout_lines
+
+- name: Znajdź najnowszy plik backupu w Azure Blob Storage
+  ansible.builtin.shell: |
+    az storage blob list --account-name {{ storage_account }} --container-name {{ container_name }} --sas-token "{{ sas_token }}" --output tsv | grep 'backup_[0-9]\{8\}_[0-9]\{6\}\.tar\.gz\.gpg' | sort -r | head -n 1 | awk -F'\t' '{print $14}'
+  register: blob_name
+  become: true
+  changed_when: blob_name.stdout != ""
+  failed_when: blob_name.rc != 0 and blob_name.stdout == ""
+  ignore_errors: true
+
+- name: Pokaż nazwę wybranego pliku backupu
+  ansible.builtin.debug:
+    var: blob_name.stdout
+
+- name: Pokaż ostrzeżenie, jeśli brak backupu
+  ansible.builtin.debug:
+    msg: "Brak plików backupu pasujących do wzorca 'backup_[0-9]{8}_[0-9]{6}\\.tar\\.gz\\.gpg' w kontenerze {{ container_name }}"
+  when: blob_name.stdout == ""
+
+- name: Pobierz najnowszy plik backupu z Azure Blob Storage
+  ansible.builtin.shell: |
+    az storage blob download --account-name {{ storage_account }} --container-name {{ container_name }} --name "{{ blob_name.stdout }}" --file {{ restore_tmp_dir }}/backup.tar.gz.gpg --sas-token "{{ sas_token }}"
+  register: download_result
+  become: true
+  changed_when: download_result.rc == 0
+  failed_when: download_result.rc != 0
+  when: blob_name.stdout != ""
+
+- name: Odszyfruj plik backupu
+  ansible.builtin.shell: |
+    gpg --decrypt --batch --passphrase "{{ gpg_passphrase }}" -o {{ restore_tmp_dir }}/backup.tar.gz {{ restore_tmp_dir }}/backup.tar.gz.gpg
+  become: true
+  changed_when: true
+  when: blob_name.stdout != ""
+
+- name: Rozpakuj główne archiwum
+  ansible.builtin.unarchive:
+    src: "{{ restore_tmp_dir }}/backup.tar.gz"
+    dest: "{{ restore_tmp_dir }}"
+    remote_src: yes
+  become: true
+  when: blob_name.stdout != ""
+
+- name: Znajdź archiwum plików
+  ansible.builtin.find:
+    paths: "{{ restore_tmp_dir }}"
+    patterns: "files_*.tar.gz"
+    file_type: file
+  register: files_archive
+  become: true
+  when: blob_name.stdout != ""
+
+- name: Znajdź wszystkie pliki i foldery oprócz *.log
+  find:
+    paths: /app/source/files
+    file_type: any
+    patterns: '!*\.log'
+    recurse: yes
+  register: files_to_remove
+
+- name: Usuń znalezione pliki i foldery
+  file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ files_to_remove.files }}"
+
+- name: Przywróć pliki do /app/source/files
+  ansible.builtin.unarchive:
+    src: "{{ files_archive.files[0].path }}"
+    dest: /app/source
+    remote_src: yes
+    creates: /app/source/files
+  when: blob_name.stdout != "" and files_archive.matched > 0
+  become: true
+
+- name: Znajdź archiwum bazy danych
+  ansible.builtin.find:
+    paths: "{{ restore_tmp_dir }}"
+    patterns: "db_*.tar.gz"
+    file_type: file
+  register: db_archive
+  become: true
+  when: blob_name.stdout != ""
+
+- name: Rozpakuj archiwum bazy danych
+  ansible.builtin.unarchive:
+    src: "{{ db_archive.files[0].path }}"
+    dest: "{{ restore_tmp_dir }}"
+    remote_src: yes
+  when: blob_name.stdout != "" and db_archive.matched > 0
+  become: true
+
+- name: Usuń istniejące tabele w bazie danych
+  ansible.builtin.shell: |
+    export PGPASSWORD="{{ pg_password }}"
+    psql -U {{ pg_user }} -h {{ pg_host }} -p {{ pg_port }} -d {{ pg_db }} -c "DO \$\$ DECLARE r RECORD; BEGIN FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE'; END LOOP; END \$\$;"
+  when: blob_name.stdout != "" and db_archive.matched > 0
+  become: true
+  changed_when: true
+
+- name: Przywróć dane bazy danych
+  ansible.builtin.shell: |
+    export PGPASSWORD="{{ pg_password }}"
+    psql -U {{ pg_user }} -h {{ pg_host }} -p {{ pg_port }} -d {{ pg_db }} -f {{ restore_tmp_dir }}/db_*.sql
+  when: blob_name.stdout != "" and db_archive.matched > 0
+  become: true
+  changed_when: true
+
+- name: Wyczyść tymczasowy katalog
+  ansible.builtin.file:
+    path: "{{ restore_tmp_dir }}"
+    state: absent
+  become: true
+  when: blob_name.stdout != ""

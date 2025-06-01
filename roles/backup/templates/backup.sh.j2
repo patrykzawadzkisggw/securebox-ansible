@@ -1,0 +1,74 @@
+#!/bin/bash
+# Ustawienie PATH dla crontaba
+export PATH=$PATH:/usr/local/bin:/usr/bin:/bin
+
+# Konfiguracja
+STORAGE_ACCOUNT="{{ storage_account }}"
+CONTAINER_NAME="{{ container_name }}"
+SAS_URL="{{ sas_url }}"
+GPG_PASSPHRASE="{{ gpg_passphrase }}"
+PG_USER="{{ pg_user }}"
+PG_HOST="{{ pg_host }}"
+PG_PORT="{{ pg_port }}"
+PG_DB="{{ pg_db }}"
+PG_PASSWORD="{{ pg_password }}"
+LOG_FILE="{{ backup_log_path }}"
+
+# Walidacja zmiennych
+if [[ -z "$SAS_URL" || -z "$GPG_PASSPHRASE" || -z "$PG_PASSWORD" ]]; then
+    echo "$(date): Błąd: Brak wymaganych zmiennych" >> "$LOG_FILE"
+    exit 1
+fi
+
+# Sprawdzenie zależności
+command -v az >/dev/null 2>&1 || { echo "$(date): Błąd: Nie znaleziono narzędzia az" >> "$LOG_FILE"; exit 1; }
+command -v pg_dump >/dev/null 2>&1 || { echo "$(date): Błąd: Nie znaleziono narzędzia pg_dump" >> "$LOG_FILE"; exit 1; }
+command -v gpg >/dev/null 2>&1 || { echo "$(date): Błąd: Nie znaleziono narzędzia gpg" >> "$LOG_FILE"; exit 1; }
+
+SAS_TOKEN=$(echo $SAS_URL | cut -d'?' -f2)
+
+# Tworzenie tymczasowego katalogu dla backupu
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+BACKUP_DIR="/tmp/backup_$TIMESTAMP"
+mkdir -p "$BACKUP_DIR" || { echo "$(date): Błąd podczas tworzenia tymczasowego katalogu" >> "$LOG_FILE"; exit 1; }
+
+# Backup plików z /app/source/files, pomijając pliki .log
+echo "$(date): Rozpoczynam backup plików" >> "$LOG_FILE"
+cd /app/source || { echo "$(date): Błąd: Nie można przejść do katalogu /app/source" >> "$LOG_FILE"; exit 1; }
+tar --exclude='*.log' -czf "$BACKUP_DIR/files_$TIMESTAMP.tar.gz" -C /app/source files || { echo "$(date): Błąd podczas tworzenia archiwum plików" >> "$LOG_FILE"; exit 1; }
+
+# Backup bazy PostgreSQL
+echo "$(date): Rozpoczynam backup bazy PostgreSQL" >> "$LOG_FILE"
+export PGPASSWORD="$PG_PASSWORD"
+pg_dump -U $PG_USER -h $PG_HOST -p $PG_PORT $PG_DB > "$BACKUP_DIR/db_$TIMESTAMP.sql" || { echo "$(date): Błąd podczas pg_dump" >> "$LOG_FILE"; exit 1; }
+tar -czf "$BACKUP_DIR/db_$TIMESTAMP.tar.gz" -C "$BACKUP_DIR" "db_$TIMESTAMP.sql" || { echo "$(date): Błąd podczas tworzenia archiwum bazy" >> "$LOG_FILE"; exit 1; }
+rm "$BACKUP_DIR/db_$TIMESTAMP.sql"
+
+# Łączenie obu archiwów w jedno
+echo "$(date): Łączenie archiwów" >> "$LOG_FILE"
+tar -czf "/tmp/backup_$TIMESTAMP.tar.gz" -C "$BACKUP_DIR" . || { echo "$(date): Błąd podczas łączenia archiwów" >> "$LOG_FILE"; exit 1; }
+
+# Szyfrowanie połączonego archiwum
+echo "$(date): Szyfrowanie połączonego archiwum" >> "$LOG_FILE"
+gpg --symmetric --cipher-algo AES256 --batch --passphrase "$GPG_PASSPHRASE" -o "/tmp/backup_$TIMESTAMP.tar.gz.gpg" "/tmp/backup_$TIMESTAMP.tar.gz" || { echo "$(date): Błąd podczas szyfrowania archiwum" >> "$LOG_FILE"; exit 1; }
+
+# Przesyłanie do Azure Blob Storage
+echo "$(date): Przesyłanie połączonego backupu do Azure" >> "$LOG_FILE"
+az storage blob upload --account-name $STORAGE_ACCOUNT --container-name $CONTAINER_NAME --file "/tmp/backup_$TIMESTAMP.tar.gz.gpg" --name "backup_$TIMESTAMP.tar.gz.gpg" --sas-token "$SAS_TOKEN" || { echo "$(date): Błąd podczas przesyłania backupu" >> "$LOG_FILE"; exit 1; }
+
+# Czyszczenie tymczasowych plików
+rm -rf "$BACKUP_DIR" "/tmp/backup_$TIMESTAMP.tar.gz" "/tmp/backup_$TIMESTAMP.tar.gz.gpg"
+
+# Usuwanie backupów starszych niż 30 dni
+echo "$(date): Usuwanie backupów starszych niż 30 dni" >> "$LOG_FILE"
+az storage blob list --account-name $STORAGE_ACCOUNT --container-name $CONTAINER_NAME --sas-token "$SAS_TOKEN" --output tsv | awk '{print $2}' | while read blob; do
+    # Walidacja nazwy pliku backupu
+    if [[ "$blob" =~ ^backup_[0-9]{8}_[0-9]{6}\.tar\.gz\.gpg$ ]]; then
+        blob_date=$(echo "$blob" | cut -d_ -f2 | cut -d. -f1)
+        if [[ -n "$blob_date" && $(date -d "$blob_date" +%s 2>/dev/null) < $(date -d "30 days ago" +%s) ]]; then
+            az storage blob delete --account-name $STORAGE_ACCOUNT --container-name $CONTAINER_NAME --name "$blob" --sas-token "$SAS_TOKEN" && echo "$(date): Usunięto $blob" >> "$LOG_FILE" || echo "$(date): Nie można usunąć $blob (może już nie istnieje)" >> "$LOG_FILE"
+        fi
+    else
+        echo "$(date): Pominięto $blob - nieprawidłowy format nazwy" >> "$LOG_FILE"
+    fi
+done
